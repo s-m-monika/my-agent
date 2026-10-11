@@ -14,12 +14,25 @@
  * Payments here are signed but NOT sent on-chain (it's a demo, no real money).
  */
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { createPublicClient, formatEther, http, verifyMessage, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
 const WALLET_FILE = path.join(process.cwd(), ".agent-wallet.json");
+// Hosted/serverless platforms (Vercel, Netlify...) have a read-only project folder.
+// There we fall back to the temp folder. It does NOT survive redeploys or cold starts,
+// so on a host you should set WALLET_PRIVATE_KEY as an environment variable instead.
+const TMP_WALLET_FILE = path.join(os.tmpdir(), ".agent-wallet.json");
+
+function readKeyFile(file: string): unknown {
+  try {
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).privateKey : null;
+  } catch {
+    return null;
+  }
+}
 const chain = createPublicClient({ chain: baseSepolia, transport: http() });
 
 export type Payment = { from: Address; to: Address; amount: string; asset: string; resource: string; nonce: string };
@@ -36,8 +49,7 @@ function loadAccount() {
         "Did you paste the wallet ADDRESS? Ignoring it and using .agent-wallet.json."
     );
   }
-  const fileKey = fs.existsSync(WALLET_FILE) ? JSON.parse(fs.readFileSync(WALLET_FILE, "utf8")).privateKey : null;
-  const key = isKey(envKey) ? envKey : isKey(fileKey) ? fileKey : null;
+  const key = [envKey, readKeyFile(WALLET_FILE), readKeyFile(TMP_WALLET_FILE)].find(isKey);
   return key ? privateKeyToAccount(key) : null;
 }
 
@@ -51,7 +63,14 @@ function requireAccount() {
 export function createWallet() {
   if (loadAccount()) return getWalletAddress();
   const privateKey = generatePrivateKey();
-  fs.writeFileSync(WALLET_FILE, JSON.stringify({ privateKey }, null, 2));
+  const data = JSON.stringify({ privateKey }, null, 2);
+  try {
+    fs.writeFileSync(WALLET_FILE, data);
+  } catch {
+    // Read-only filesystem (hosted). Use the temp folder instead.
+    fs.writeFileSync(TMP_WALLET_FILE, data);
+    console.warn("[wallet] Project folder is read-only, saved wallet to temp. Set WALLET_PRIVATE_KEY on your host to keep it.");
+  }
   return privateKeyToAccount(privateKey).address;
 }
 
@@ -64,13 +83,27 @@ export async function getWalletBalance() {
   return `${formatEther(wei)} ETH`;
 }
 
+/** Parse JSON, or explain clearly why the response wasn't JSON (e.g. a host login page). */
+async function readJson(res: Response) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const hint =
+      res.status === 401 || res.status === 403
+        ? " The host is blocking the request. On Vercel, turn off Deployment Protection (Settings > Deployment Protection) or use the production URL."
+        : "";
+    throw new Error(`${res.url} returned ${res.status} with a non-JSON response.${hint}`);
+  }
+}
+
 /** Fetch a URL. If it asks for payment (402), sign one with the wallet and try again. */
 export async function payAndFetch(url: string) {
   const first = await fetch(url);
-  if (first.status !== 402) return { data: await first.json() };
+  if (first.status !== 402) return { data: await readJson(first) };
 
   const account = requireAccount();
-  const { price, asset, payTo } = await first.json();
+  const { price, asset, payTo } = await readJson(first);
   const payment: Payment = {
     from: account.address,
     to: payTo,
@@ -84,7 +117,7 @@ export async function payAndFetch(url: string) {
 
   const paid = await fetch(url, { headers: { "X-PAYMENT": header } });
   return {
-    data: await paid.json(),
+    data: await readJson(paid),
     payment: { status: paid.status, amount: `${price} ${asset}`, to: payTo, signature: `${signature.slice(0, 18)}...` },
   };
 }

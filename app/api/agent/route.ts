@@ -1,6 +1,10 @@
 import { MODEL, runAgent } from "@/agent/agent";
 import { tools } from "@/agent/tools";
 
+// The agent can make several Gemini + tool calls per message. Give hosted
+// (serverless) functions enough time instead of the short default.
+export const maxDuration = 60;
+
 // GET /api/agent -> setup status + the list of tools (shown on the page)
 export async function GET() {
   return Response.json({
