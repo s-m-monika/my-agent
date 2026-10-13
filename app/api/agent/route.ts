@@ -27,13 +27,17 @@ export async function POST(req: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // Gemini free-tier quota hit: show a short, readable message instead of the raw JSON.
+    // Only reached if EVERY fallback model failed (usually all free quotas used up).
     if (message.includes("RESOURCE_EXHAUSTED") || message.includes('"code":429')) {
       const retry = message.match(/"retryDelay":"(\d+)s"/)?.[1];
-      const wait = retry ? ` Try again in about ${Math.ceil(Number(retry) / 60)} min,` : " Wait for the quota to reset,";
+      const wait = retry ? ` Try again in about ${Math.ceil(Number(retry) / 60)} min.` : " Try again later.";
       return Response.json(
-        { error: `Gemini quota used up for model "${MODEL}".${wait} or set a different GEMINI_MODEL in .env and restart.` },
+        { error: `All Gemini models are out of free quota right now.${wait} Turning on billing in Google AI Studio removes this limit.` },
         { status: 429 }
       );
+    }
+    if (message.includes("API_KEY_INVALID") || message.includes("API key not valid")) {
+      return Response.json({ error: "Your GEMINI_API_KEY is not valid. Check it in .env (or your host's environment variables)." }, { status: 401 });
     }
     return Response.json({ error: message }, { status: 500 });
   }

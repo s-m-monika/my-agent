@@ -9,8 +9,37 @@
 import { GoogleGenAI, type Content, type Part } from "@google/genai";
 import { tools } from "./tools";
 
-export const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+export const MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-flash-lite-latest";
 const MAX_STEPS = 5;
+
+/**
+ * Backup models, tried in order if the main one fails. Each model has its own
+ * free-tier quota, so when one runs out (429), is retired (404) or is
+ * overloaded (503), the agent just moves on to the next one.
+ */
+const FALLBACK_MODELS = [
+  "gemini-flash-lite-latest",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+  "gemini-3.5-flash-lite",
+  "gemini-3.5-flash",
+];
+const MODELS = [...new Set([MODEL, ...FALLBACK_MODELS])];
+
+/** The model that last worked, so we don't retry dead ones on every message. */
+let workingModel = MODEL;
+
+/** Errors where trying another model can help: not found, quota, overloaded, server error, bad model name. */
+function shouldTryNextModel(err: unknown) {
+  const status = (err as { status?: number })?.status;
+  if (status && [400, 403, 404, 429, 500, 503].includes(status)) {
+    // A 400 is only worth retrying if it's about the model, not our request.
+    return status !== 400 || /model/i.test(String((err as Error).message));
+  }
+  return /NOT_FOUND|RESOURCE_EXHAUSTED|UNAVAILABLE|INTERNAL|"code":(404|429|500|503)/.test(String((err as Error)?.message));
+}
 
 const SYSTEM_PROMPT =
   "You are a helpful agent with your own crypto wallet. Use your tools when they help. " +
@@ -27,23 +56,40 @@ export async function runAgent(history: ChatMessage[], ctx: { baseUrl: string })
   }));
   const steps: Step[] = [];
 
-  for (let i = 0; i < MAX_STEPS; i++) {
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        tools: [
-          {
-            functionDeclarations: tools.map((t) => ({
-              name: t.name,
-              description: t.description,
-              parametersJsonSchema: t.parameters,
-            })),
-          },
-        ],
+  const config = {
+    systemInstruction: SYSTEM_PROMPT,
+    tools: [
+      {
+        functionDeclarations: tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parametersJsonSchema: t.parameters,
+        })),
       },
-    });
+    ],
+  };
+
+  /** Call Gemini, starting with the last model that worked and falling back through the list. */
+  async function generate() {
+    const order = [workingModel, ...MODELS.filter((m) => m !== workingModel)];
+    let lastError: unknown;
+    for (const model of order) {
+      try {
+        const response = await ai.models.generateContent({ model, contents, config });
+        if (model !== workingModel) console.warn(`[agent] switched model: ${workingModel} -> ${model}`);
+        workingModel = model;
+        return response;
+      } catch (err) {
+        lastError = err;
+        if (!shouldTryNextModel(err)) throw err;
+        console.warn(`[agent] model ${model} failed (${(err as { status?: number }).status ?? "error"}), trying next`);
+      }
+    }
+    throw lastError;
+  }
+
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const response = await generate();
 
     const calls = response.functionCalls ?? [];
     if (calls.length === 0) return { answer: response.text ?? "", steps };
