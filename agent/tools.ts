@@ -9,6 +9,11 @@
  * and save. It shows up in the "Tools" list on the page.
  */
 import { getWalletAddress, getWalletBalance, payAndFetch } from "./wallet";
+import { getEthereumGas } from "./gas";
+import { validateCode } from "./audit";
+
+/** Most servers reject URLs much longer than this. */
+const MAX_URL_LENGTH = 12000;
 
 export type Tool = {
   name: string;
@@ -20,6 +25,42 @@ export type Tool = {
 };
 
 export const tools: Tool[] = [
+  // ─── DevPulse: free live Ethereum gas tracker ───
+  {
+    name: "get_gas_price",
+    description:
+      "Get live Ethereum mainnet gas data: gas price, base fee, low/standard/fast priority fees (gwei) and the cost of a simple ETH transfer. " +
+      "Use whenever the user asks about current gas, fees or whether now is a good time to transact. Free.",
+    parameters: { type: "object", properties: {} },
+    run: async () => getEthereumGas(),
+  },
+
+  // ─── DevPulse: paid smart-contract checker (same x402 flow as get_weather) ───
+  {
+    name: "audit_smart_contract_snippet",
+    description:
+      "Check Solidity code for common risky patterns (tx.origin auth, unchecked low-level calls, reentrancy, delegatecall). " +
+      "Use when the user shares Solidity code and asks for a review, audit or security check. Pass the FULL code exactly as given. " +
+      "Costs 0.05 USDC, paid automatically from the agent's wallet. Results are heuristic, not a full audit.",
+    parameters: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The complete Solidity source code to check, unchanged." },
+      },
+      required: ["code"],
+    },
+    run: async ({ code }, { baseUrl }) => {
+      const invalid = validateCode(code);
+      if (invalid) throw new Error(invalid);
+      const url = `${baseUrl}/api/audit?code=${encodeURIComponent(code)}`;
+      if (url.length > MAX_URL_LENGTH) throw new Error("This code is too large to send in one request. Check one contract or function at a time.");
+      const result = await payAndFetch(url);
+      // Only treat it as paid if the API accepted the signed payment.
+      if (!result.payment) return result; // e.g. the API rejected the input before asking for payment
+      return { ...result, paymentVerified: result.payment.status === 200 };
+    },
+  },
+
   // ─── 1. A paid API: the agent's wallet signs a payment to unlock it ───
   {
     name: "get_weather",
