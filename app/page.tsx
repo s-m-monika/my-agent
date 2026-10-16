@@ -11,13 +11,15 @@ import {
   RefreshCw,
   RotateCcw,
   SendHorizontal,
+  ShieldCheck,
   Wallet,
+  X,
+  Zap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +28,42 @@ type Message = { role: "user" | "agent"; text: string; steps?: Step[]; error?: b
 type Status = { hasApiKey: boolean; model: string; tools: { name: string; description: string }[] };
 type WalletInfo = { address: string | null; balance?: string };
 
-const EXAMPLES = ["What's the weather in Mumbai?", "What's in your wallet?", "Roll a 20 sided dice"];
+/** A small contract with deliberate issues, so the checker example has something to find. */
+const SAMPLE_CONTRACT = `pragma solidity ^0.8.20;
+
+contract Vault {
+    mapping(address => uint256) public balances;
+    address public owner = msg.sender;
+
+    function deposit() external payable {
+        balances[msg.sender] += msg.value;
+    }
+
+    function withdraw() external {
+        uint256 amount = balances[msg.sender];
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok, "transfer failed");
+        balances[msg.sender] = 0;
+    }
+
+    function sweep(address payable to) external {
+        require(tx.origin == owner, "not owner");
+        to.send(address(this).balance);
+    }
+}`;
+
+/** `prefill` examples go into the input box (so the user can paste their own code) instead of sending right away. */
+const EXAMPLES: { label: string; prompt: string; prefill?: boolean }[] = [
+  { label: "Check the current Ethereum gas price.", prompt: "Check the current Ethereum gas price." },
+  {
+    label: "Review this Solidity contract for common security issues: [paste code]",
+    prompt: `Review this Solidity contract for common security issues:\n\n${SAMPLE_CONTRACT}`,
+    prefill: true,
+  },
+  { label: "Explain the difference between high and low gas prices.", prompt: "Explain the difference between high and low gas prices." },
+  { label: "What's the weather in Mumbai?", prompt: "What's the weather in Mumbai?" },
+  { label: "Roll a 20 sided dice", prompt: "Roll a 20 sided dice" },
+];
 
 export default function Home() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -86,16 +123,24 @@ export default function Home() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Label>
             <img src="/risein-logo.svg" alt="Rise In" className="mr-3 h-5 w-auto" />
-            <span className="text-foreground">/ Agentmaxxing</span>&nbsp;starter kit
+            <span className="text-foreground">/ DevPulse</span>&nbsp;Web3 developer assistant
           </Label>
           {status && <Label>Model: {status.model}</Label>}
         </div>
         <h1 className="text-5xl leading-[0.9] font-bold tracking-[-0.045em] uppercase md:text-7xl">
-          Agentic <span className="text-primary">starter.</span>
+          Dev<span className="text-primary">Pulse.</span>
         </h1>
         <p className="max-w-xl text-lg text-muted-foreground">
-          An AI agent that uses your tools and pays for APIs with its own wallet.
+          An AI assistant for Web3 developers that checks live gas, reviews Solidity, and pays for APIs with its own wallet.
         </p>
+        <div className="grid max-w-3xl gap-3 sm:grid-cols-2">
+          <Feature icon={<Zap className="size-4" />} title="Live gas tracker" price="Free">
+            Current Ethereum base fee, priority fees and transfer cost, read live from public RPC nodes.
+          </Feature>
+          <Feature icon={<ShieldCheck className="size-4" />} title="Contract checker" price="0.05 USDC">
+            Flags risky Solidity patterns like reentrancy and tx.origin auth. Paid per request with a signed demo payment.
+          </Feature>
+        </div>
       </header>
 
       <div className="grid flex-1 gap-6 lg:grid-cols-[380px_1fr]">
@@ -180,14 +225,20 @@ export default function Home() {
                       {!ready
                         ? "Add your Gemini API key to start."
                         : wallet && !wallet.address
-                          ? "Tip: create a wallet first so the agent can pay for the weather API."
+                          ? "Tip: create a wallet first so the agent can pay for the contract checker and weather API."
                           : "Pick an example to start."}
                     </p>
                   </div>
                   <div className="flex flex-wrap justify-center gap-2">
                     {EXAMPLES.map((e) => (
-                      <Button key={e} variant="outline" onClick={() => send(e)} disabled={!ready} className="font-mono">
-                        <span className="text-primary">&gt;</span> {e}
+                      <Button
+                        key={e.label}
+                        variant="outline"
+                        onClick={() => (e.prefill ? setInput(e.prompt) : send(e.prompt))}
+                        disabled={!ready}
+                        className="h-auto max-w-full font-mono whitespace-normal"
+                      >
+                        <span className="text-primary">&gt;</span> {e.label}
                       </Button>
                     ))}
                   </div>
@@ -196,7 +247,7 @@ export default function Home() {
 
               {messages.map((m, i) =>
                 m.role === "user" ? (
-                  <div key={i} className="max-w-[85%] self-end bg-primary px-4 py-2.5 font-medium text-primary-foreground">
+                  <div key={i} className="max-w-[85%] self-end bg-primary px-4 py-2.5 font-medium break-words whitespace-pre-wrap text-primary-foreground">
                     {m.text}
                   </div>
                 ) : (
@@ -232,14 +283,23 @@ export default function Home() {
                 send(input);
               }}
             >
-              <div className={cn("flex flex-1 items-center border border-input bg-background focus-within:border-primary", !ready && "opacity-50")}>
-                <span className="pl-3 font-mono text-base whitespace-nowrap text-muted-foreground md:text-sm">~/agent $</span>
-                <Input
+              <div className={cn("flex min-w-0 flex-1 items-start border border-input bg-background focus-within:border-primary", !ready && "opacity-50")}>
+                <span className="hidden pt-3 pl-3 font-mono text-base whitespace-nowrap text-muted-foreground sm:inline md:text-sm">~/devpulse $</span>
+                {/* A textarea (not an input) so pasted Solidity keeps its line breaks. Enter sends, Shift+Enter adds a line. */}
+                <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder={ready ? "ask your agent something..." : "add your Gemini API key to start"}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      send(input);
+                    }
+                  }}
+                  rows={Math.min(8, Math.max(1, input.split("\n").length))}
+                  placeholder={ready ? "ask DevPulse something, or paste Solidity code..." : "add your Gemini API key to start"}
                   disabled={!ready}
-                  className="h-11 border-0 bg-transparent font-mono focus-visible:ring-0 disabled:bg-transparent disabled:opacity-100 dark:bg-transparent dark:disabled:bg-transparent"
+                  aria-label="Message"
+                  className="min-h-11 w-full min-w-0 resize-none bg-transparent px-3 py-2.5 font-mono text-base outline-none placeholder:text-muted-foreground md:text-sm"
                 />
               </div>
               <Button type="submit" className="h-auto px-5" disabled={!ready || thinking || !input.trim()} aria-label="Send">
@@ -331,22 +391,71 @@ function WalletDetails({ wallet, onRefresh }: { wallet: WalletInfo; onRefresh: (
   );
 }
 
+type PaymentInfo = { status: number; amount: string; to: string; signature: string };
+
 function ToolCall({ step }: { step: Step }) {
-  const payment = step.result?.payment;
+  const payment: PaymentInfo | undefined = step.result?.payment;
+  // A payment only counts as successful if the API verified it and answered 200.
+  const verified = payment?.status === 200;
   return (
     <Collapsible className="border font-mono text-xs">
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted">
+      <CollapsibleTrigger className="group flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left hover:bg-muted">
         <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]:rotate-90" />
         <span className="text-muted-foreground uppercase">Tool</span>
-        <span className="text-primary">{step.tool}</span>
-        {payment && <Badge className="ml-auto bg-blue font-mono text-foreground uppercase">Paid {payment.amount}</Badge>}
-        {step.error && <Badge variant="destructive" className="ml-auto font-mono uppercase">Failed</Badge>}
+        <span className="break-all text-primary">{step.tool}</span>
+        <span className="ml-auto flex gap-2">
+          {payment &&
+            (verified ? (
+              <Badge className="bg-blue font-mono text-foreground uppercase">Paid {payment.amount}</Badge>
+            ) : (
+              <Badge variant="destructive" className="font-mono uppercase">Payment rejected</Badge>
+            ))}
+          {step.error && <Badge variant="destructive" className="font-mono uppercase">Failed</Badge>}
+        </span>
       </CollapsibleTrigger>
+      {payment && <PaymentFlow payment={payment} verified={verified} reason={step.result?.data?.reason} />}
       <CollapsibleContent className="flex flex-col gap-2 border-t px-3 py-2">
         <Json label="Input" value={step.args} />
         <Json label="Output" value={step.result} />
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+/** The x402 steps for one paid call: payment required → signature → verified / failed. */
+function PaymentFlow({ payment, verified, reason }: { payment: PaymentInfo; verified: boolean; reason?: string }) {
+  const steps = [
+    { ok: true, label: "Payment required", detail: `402 · ${payment.amount}` },
+    { ok: true, label: "Signature generated", detail: payment.signature },
+    verified
+      ? { ok: true, label: "Verification successful", detail: "200 OK" }
+      : { ok: false, label: "Verification failed", detail: `HTTP ${payment.status}${reason ? ` · ${reason}` : ""}` },
+  ];
+  return (
+    <div className="flex flex-col gap-1 border-t px-3 py-2" aria-label="Payment flow">
+      {steps.map((s) => (
+        <p key={s.label} className={cn("flex flex-wrap items-center gap-x-2", !s.ok && "text-destructive")}>
+          {s.ok ? <Check className="size-3.5 text-primary" /> : <X className="size-3.5" />}
+          <span className="uppercase">{s.label}</span>
+          <span className="break-all text-muted-foreground">{s.detail}</span>
+        </p>
+      ))}
+      <p className="text-muted-foreground">Signed mock payment. No funds moved on-chain.</p>
+    </div>
+  );
+}
+
+function Feature(props: { icon: React.ReactNode; title: string; price: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-3 border bg-card p-3">
+      <div className="flex size-8 shrink-0 items-center justify-center bg-primary text-primary-foreground">{props.icon}</div>
+      <div className="min-w-0">
+        <p className="flex flex-wrap items-center gap-2 font-bold tracking-tight uppercase">
+          {props.title} <span className="font-mono text-xs font-medium text-primary">{props.price}</span>
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{props.children}</p>
+      </div>
+    </div>
   );
 }
 
