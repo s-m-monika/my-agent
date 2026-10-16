@@ -10,8 +10,8 @@
 
 DevPulse is an autonomous AI agent powered by Google Gemini, built for Web3 developers. You chat with it in plain English: it reads **live Ethereum gas data**, checks **Solidity code for common risky patterns**, explains the results in beginner-friendly language, and pays for protected APIs from **its own wallet** using the x402 pay-per-request pattern.
 
-**Live demo:** [agentmax1.netlify.app](https://agentmax1.netlify.app/)<br />
-**Source code:** [github.com/s-m-monika/midnightL1](https://github.com/s-m-monika/midnightL1)
+**Live demo:** https://devpulse-week2.netlify.app/ <br />
+
 
 ---
 
